@@ -21,10 +21,18 @@ export const config = {
   clientDist: path.resolve(here, '../../client/dist'),
 
   maxFileSize: 50 * 1024 * 1024,
+  maxFileSizeLabel: '50 MB',
   maxFiles: 20,
   maxPdfPages: 50,
   maxConcurrent: intFromEnv('MAX_CONCURRENT_CONVERSIONS', 3),
   maxInputPixels: 200_000_000,
+  minResizeDimension: 16,
+  maxResizeDimension: 20_000,
+
+  uploadBodyLimit: 2 * 1024 * 1024,
+  uploadFieldSize: 1024 * 1024,
+  maxUploadFields: 5,
+  maxUploadParts: 50,
 
   jobTtlMs: 20 * 60 * 1000,
   cleanupCron: '*/5 * * * *',

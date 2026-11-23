@@ -23,10 +23,10 @@ interface ErrorBody {
   errors?: ConversionError[];
 }
 
-export async function convertFiles(
-  files: File[],
-  payload: ConvertOptionsPayload,
-): Promise<ConvertResponse> {
+const NETWORK_ERROR_MESSAGE =
+  'Could not reach the server. Check that it is running and try again.';
+
+function createFormData(files: File[], payload: ConvertOptionsPayload): FormData {
   const form = new FormData();
   form.append('options', JSON.stringify(payload));
 
@@ -34,32 +34,48 @@ export async function convertFiles(
     form.append('files', file, file.name || 'upload');
   }
 
-  let response: Response;
+  return form;
+}
+
+async function readJson(response: Response): Promise<unknown> {
   try {
-    response = await fetch('/api/convert', { method: 'POST', body: form });
+    return await response.json();
   } catch {
-    throw new ApiClientError(
-      'Could not reach the server. Check that it is running and try again.',
-      'NETWORK_ERROR',
-    );
+    return null;
+  }
+}
+
+function toApiClientError(data: unknown, status: number): ApiClientError {
+  const body = (data ?? {}) as ErrorBody;
+  const detail = body.error;
+
+  return new ApiClientError(
+    detail?.message ?? `Conversion failed (HTTP ${status}).`,
+    detail?.code ?? 'REQUEST_FAILED',
+    status,
+    detail?.errors ?? body.errors,
+  );
+}
+
+export async function convertFiles(
+  files: File[],
+  payload: ConvertOptionsPayload,
+): Promise<ConvertResponse> {
+  let response: Response;
+
+  try {
+    response = await fetch('/api/convert', {
+      method: 'POST',
+      body: createFormData(files, payload),
+    });
+  } catch {
+    throw new ApiClientError(NETWORK_ERROR_MESSAGE, 'NETWORK_ERROR');
   }
 
-  let data: unknown = null;
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
+  const data = await readJson(response);
 
   if (!response.ok) {
-    const body = (data ?? {}) as ErrorBody;
-    const detail = body.error;
-    throw new ApiClientError(
-      detail?.message ?? `Conversion failed (HTTP ${response.status}).`,
-      detail?.code ?? 'REQUEST_FAILED',
-      response.status,
-      detail?.errors ?? body.errors,
-    );
+    throw toApiClientError(data, response.status);
   }
 
   return data as ConvertResponse;

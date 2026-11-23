@@ -1,8 +1,18 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { config } from '../config.js';
 import { ApiError } from '../utils/errors.js';
 
 function errorCode(error: FastifyError): string {
   return typeof error.code === 'string' ? error.code : '';
+}
+
+function sendError(
+  reply: FastifyReply,
+  statusCode: number,
+  code: string,
+  message: string,
+): FastifyReply {
+  return reply.code(statusCode).send({ error: { code, message } });
 }
 
 export function registerErrorHandler(app: FastifyInstance): void {
@@ -18,45 +28,38 @@ export function registerErrorHandler(app: FastifyInstance): void {
       });
     }
 
-    const code = errorCode(error);
+    switch (errorCode(error)) {
+      case 'FST_REQ_FILE_TOO_LARGE':
+        return sendError(
+          reply,
+          413,
+          'FILE_TOO_LARGE',
+          `Each file must be ${config.maxFileSizeLabel} or smaller.`,
+        );
 
-    if (code === 'FST_REQ_FILE_TOO_LARGE') {
-      return reply.code(413).send({
-        error: {
-          code: 'FILE_TOO_LARGE',
-          message: 'Each file must be 50 MB or smaller. Try compressing the file first.',
-        },
-      });
+      case 'FST_FILES_LIMIT':
+        return sendError(
+          reply,
+          400,
+          'TOO_MANY_FILES',
+          `You can upload up to ${config.maxFiles} files in a single batch.`,
+        );
+
+      case 'FST_PARTS_LIMIT':
+      case 'FST_FIELDS_LIMIT':
+      case 'FST_FIELD_SIZE_LIMIT':
+        return sendError(
+          reply,
+          400,
+          'INVALID_UPLOAD',
+          'The upload contained too many fields or parts. Please try again with fewer files.',
+        );
+
+      case 'FST_ERR_CTP_BODY_TOO_LARGE':
+        return sendError(reply, 413, 'PAYLOAD_TOO_LARGE', 'The request payload is too large.');
     }
 
-    if (code === 'FST_FILES_LIMIT') {
-      return reply.code(400).send({
-        error: {
-          code: 'TOO_MANY_FILES',
-          message: 'You can upload up to 20 files in a single batch.',
-        },
-      });
-    }
-
-    if (code === 'FST_PARTS_LIMIT' || code === 'FST_FIELDS_LIMIT' || code === 'FST_FIELD_SIZE_LIMIT') {
-      return reply.code(400).send({
-        error: {
-          code: 'INVALID_UPLOAD',
-          message: 'The upload contained too many fields or parts. Please try again with fewer files.',
-        },
-      });
-    }
-
-    if (code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
-      return reply.code(413).send({
-        error: {
-          code: 'PAYLOAD_TOO_LARGE',
-          message: 'The request payload is too large.',
-        },
-      });
-    }
-
-    request.log.error({ err: error }, 'Unhandled request error');
+    request.log.error({ err: error }, 'unhandled request error');
 
     const status =
       error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;

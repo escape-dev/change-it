@@ -1,17 +1,16 @@
 import {
   ArrowRight,
   Check,
-  ChevronDown,
   Clock,
   Download,
   FileArchive,
   FileText,
-  ImageDown,
   Scaling,
 } from 'lucide-react';
 import { formatBytes, formatDuration } from '../lib/format';
 import type { ConversionResult } from '../types';
 import { CompareSlider } from './CompareSlider';
+import { PageDownloads } from './PageDownloads';
 
 interface ResultCardProps {
   result: ConversionResult;
@@ -44,14 +43,17 @@ function Metric({
   );
 }
 
-export function ResultCard({ result }: ResultCardProps) {
-  const downloads = result.downloads ?? [];
-  const hasPageList = downloads.length > 1;
-  const hasCompare = Boolean(result.previewBefore && result.previewAfter);
-  const resolution =
-    result.width && result.height ? `${result.width} × ${result.height}` : null;
-  const savedTone = result.savedPercent > 0 ? 'good' : result.savedPercent < 0 ? 'warn' : 'default';
-  const savedValue = `${Math.abs(result.savedPercent)}%`;
+interface ResultMetrics {
+  resolution: string | null;
+  savedTone: 'default' | 'good' | 'warn';
+  savedValue: string;
+  savedHint: string;
+}
+
+function resultMetrics(result: ConversionResult): ResultMetrics {
+  const resolution = result.width && result.height ? `${result.width} × ${result.height}` : null;
+  const savedTone: ResultMetrics['savedTone'] =
+    result.savedPercent > 0 ? 'good' : result.savedPercent < 0 ? 'warn' : 'default';
   const savedHint =
     result.savedPercent > 0
       ? 'smaller'
@@ -59,16 +61,29 @@ export function ResultCard({ result }: ResultCardProps) {
         ? 'larger than input'
         : 'no change';
 
+  return {
+    resolution,
+    savedTone,
+    savedValue: `${Math.abs(result.savedPercent)}%`,
+    savedHint,
+  };
+}
+
+export function ResultCard({ result }: ResultCardProps) {
+  const downloads = result.downloads ?? [];
+  const hasPageList = downloads.length > 1;
   const isPdfOutput = result.outputFormat === 'pdf';
+  const { resolution, savedTone, savedValue, savedHint } = resultMetrics(result);
+
+  const compare =
+    result.previewBefore && result.previewAfter
+      ? { before: result.previewBefore, after: result.previewAfter }
+      : null;
 
   return (
     <article className="card flex flex-col overflow-hidden">
-      {hasCompare && (
-        <CompareSlider
-          before={result.previewBefore!}
-          after={result.previewAfter!}
-          alt={result.fileName}
-        />
+      {compare && (
+        <CompareSlider before={compare.before} after={compare.after} alt={result.fileName} />
       )}
 
       <div className="flex flex-1 flex-col p-4 sm:p-5">
@@ -99,7 +114,7 @@ export function ResultCard({ result }: ResultCardProps) {
         <p className="mt-0.5 truncate text-[11px] text-slate-500" title={result.sources.join(', ')}>
           {result.sources.length > 1
             ? `From ${result.sources.length} images: ${result.sources.join(', ')}`
-            : result.sources[0] ?? result.fileName}
+            : (result.sources[0] ?? result.fileName)}
         </p>
 
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -107,21 +122,12 @@ export function ResultCard({ result }: ResultCardProps) {
             label="Resolution"
             value={resolution ?? '—'}
             hint={
-              resolution
-                ? result.resolutionPreserved
-                  ? 'unchanged'
-                  : 'resized'
-                : undefined
+              resolution ? (result.resolutionPreserved ? 'unchanged' : 'resized') : undefined
             }
           />
           <Metric label="Original" value={formatBytes(result.originalSize)} />
           <Metric label="New size" value={formatBytes(result.outputSize)} />
-          <Metric
-            label="Saved"
-            value={savedValue}
-            hint={savedHint}
-            tone={savedTone}
-          />
+          <Metric label="Saved" value={savedValue} hint={savedHint} tone={savedTone} />
         </div>
 
         {result.note && (
@@ -155,32 +161,7 @@ export function ResultCard({ result }: ResultCardProps) {
             {hasPageList ? 'Download pages (.zip)' : isPdfOutput ? 'Download PDF' : 'Download'}
           </a>
 
-          {hasPageList && (
-            <details className="group rounded-lg border border-white/5 bg-slate-950/40">
-              <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-[11px] text-slate-400 [&::-webkit-details-marker]:hidden">
-                <span>Individual pages ({downloads.length})</span>
-                <ChevronDown className="h-3.5 w-3.5 transition group-open:rotate-180" />
-              </summary>
-              <ul className="max-h-40 space-y-0.5 overflow-auto border-t border-white/5 p-1.5">
-                {downloads.map((download) => (
-                  <li key={download.url}>
-                    <a
-                      href={download.url}
-                      className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-[11px] text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
-                    >
-                      <span className="truncate">
-                        {download.page ? `Page ${download.page}` : download.name}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1.5 text-slate-500">
-                        {formatBytes(download.size)}
-                        <ImageDown className="h-3 w-3" />
-                      </span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
+          <PageDownloads downloads={downloads} />
         </div>
       </div>
     </article>

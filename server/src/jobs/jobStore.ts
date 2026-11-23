@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import { config } from '../config.js';
 
 export interface StoredFile {
@@ -25,14 +26,23 @@ export interface Job {
   timer?: NodeJS.Timeout;
 }
 
-const jobs = new Map<string, Job>();
-
-export async function initJobStore(): Promise<void> {
-  await fs.mkdir(config.tempRoot, { recursive: true });
+export interface SaveOutputInput {
+  groupId?: string;
+  downloadName: string;
+  data: Buffer;
+  mime: string;
+  page?: number;
 }
 
-function scheduleExpiry(job: Job): void {
+const jobs = new Map<string, Job>();
+
+async function safeRemove(targetPath: string): Promise<void> {
+  await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
+}
+
+function touchJob(job: Job): void {
   if (job.timer) clearTimeout(job.timer);
+
   job.lastActivity = Date.now();
   job.timer = setTimeout(() => {
     void removeJob(job.id);
@@ -40,11 +50,16 @@ function scheduleExpiry(job: Job): void {
   job.timer.unref();
 }
 
+export async function initJobStore(): Promise<void> {
+  await fs.mkdir(config.tempRoot, { recursive: true });
+}
+
 export async function createJob(): Promise<Job> {
   const id = randomUUID();
   const dir = path.join(config.tempRoot, id);
   const inputDir = path.join(dir, 'in');
   const outputDir = path.join(dir, 'out');
+
   await fs.mkdir(inputDir, { recursive: true });
   await fs.mkdir(outputDir, { recursive: true });
 
@@ -59,68 +74,52 @@ export async function createJob(): Promise<Job> {
   };
 
   jobs.set(id, job);
-  scheduleExpiry(job);
+  touchJob(job);
   return job;
-}
-
-export function getJob(jobId: string): Job | undefined {
-  const job = jobs.get(jobId);
-  if (job) scheduleExpiry(job);
-  return job;
-}
-
-export function peekJob(jobId: string): Job | undefined {
-  return jobs.get(jobId);
 }
 
 export function getStoredFile(jobId: string, fileId: string): StoredFile | undefined {
   const job = jobs.get(jobId);
   if (!job) return undefined;
-  scheduleExpiry(job);
+
+  touchJob(job);
   return job.files.get(fileId);
 }
 
 export function getGroupFiles(jobId: string, groupId: string): StoredFile[] {
   const job = jobs.get(jobId);
   if (!job) return [];
-  scheduleExpiry(job);
+
+  touchJob(job);
   return [...job.files.values()].filter((file) => file.groupId === groupId);
 }
 
 export function getAllFiles(jobId: string): StoredFile[] {
   const job = jobs.get(jobId);
   if (!job) return [];
-  scheduleExpiry(job);
+
+  touchJob(job);
   return [...job.files.values()];
 }
 
-export async function saveOutput(
-  job: Job,
-  input: {
-    groupId?: string;
-    downloadName: string;
-    data: Buffer;
-    mime: string;
-    page?: number;
-  },
-): Promise<StoredFile> {
+export async function saveOutput(job: Job, output: SaveOutputInput): Promise<StoredFile> {
   const id = randomUUID();
   const filePath = path.join(job.outputDir, id);
-  await fs.writeFile(filePath, input.data);
+  await fs.writeFile(filePath, output.data);
 
   const record: StoredFile = {
     id,
     jobId: job.id,
-    ...(input.groupId ? { groupId: input.groupId } : {}),
+    ...(output.groupId ? { groupId: output.groupId } : {}),
     path: filePath,
-    downloadName: input.downloadName,
-    mime: input.mime,
-    size: input.data.byteLength,
-    ...(input.page !== undefined ? { page: input.page } : {}),
+    downloadName: output.downloadName,
+    mime: output.mime,
+    size: output.data.byteLength,
+    ...(output.page !== undefined ? { page: output.page } : {}),
   };
 
   job.files.set(id, record);
-  scheduleExpiry(job);
+  touchJob(job);
   return record;
 }
 
@@ -128,29 +127,29 @@ export async function deleteGroupFiles(jobId: string, groupId: string): Promise<
   const job = jobs.get(jobId);
   if (!job) return;
 
-  for (const [id, file] of job.files) {
-    if (file.groupId === groupId) {
-      job.files.delete(id);
-      await fs.rm(file.path, { force: true });
-    }
+  const groupFiles = [...job.files.values()].filter((file) => file.groupId === groupId);
+  for (const file of groupFiles) {
+    job.files.delete(file.id);
   }
+
+  await Promise.all(groupFiles.map((file) => safeRemove(file.path)));
 }
 
 export async function removeJob(jobId: string): Promise<void> {
   const job = jobs.get(jobId);
-  if (!job) {
-    await fs.rm(path.join(config.tempRoot, jobId), { recursive: true, force: true });
-    return;
-  }
 
-  if (job.timer) clearTimeout(job.timer);
+  if (job?.timer) clearTimeout(job.timer);
   jobs.delete(jobId);
-  await fs.rm(job.dir, { recursive: true, force: true });
+
+  await safeRemove(job?.dir ?? path.join(config.tempRoot, jobId));
 }
 
-export async function sweepStaleJobs(maxAgeMs: number): Promise<number> {
+export async function removeJobInputs(job: Job): Promise<void> {
+  await safeRemove(job.inputDir);
+}
+
+async function sweepRegisteredJobs(maxAgeMs: number, now: number): Promise<number> {
   let removed = 0;
-  const now = Date.now();
 
   for (const job of [...jobs.values()]) {
     if (now - job.lastActivity > maxAgeMs) {
@@ -159,28 +158,47 @@ export async function sweepStaleJobs(maxAgeMs: number): Promise<number> {
     }
   }
 
-  let entries;
+  return removed;
+}
+
+async function readTempDirectories(): Promise<Dirent[] | null> {
   try {
-    entries = await fs.readdir(config.tempRoot, { withFileTypes: true });
+    return await fs.readdir(config.tempRoot, { withFileTypes: true });
   } catch {
-    return removed;
+    return null;
   }
+}
+
+async function sweepOrphanDirectories(maxAgeMs: number, now: number): Promise<number> {
+  const entries = await readTempDirectories();
+  if (!entries) return 0;
+
+  let removed = 0;
 
   for (const entry of entries) {
     if (!entry.isDirectory() || jobs.has(entry.name)) continue;
+
     const dirPath = path.join(config.tempRoot, entry.name);
+
     try {
-      const stat = await fs.stat(dirPath);
-      if (now - stat.mtimeMs > maxAgeMs) {
-        await fs.rm(dirPath, { recursive: true, force: true });
-        removed += 1;
-      }
+      const stats = await fs.stat(dirPath);
+      if (now - stats.mtimeMs <= maxAgeMs) continue;
+
+      await safeRemove(dirPath);
+      removed += 1;
     } catch {
-      void 0;
+      continue;
     }
   }
 
   return removed;
+}
+
+export async function sweepStaleJobs(maxAgeMs: number): Promise<number> {
+  const now = Date.now();
+  const registeredRemoved = await sweepRegisteredJobs(maxAgeMs, now);
+  const orphanRemoved = await sweepOrphanDirectories(maxAgeMs, now);
+  return registeredRemoved + orphanRemoved;
 }
 
 export function activeJobCount(): number {

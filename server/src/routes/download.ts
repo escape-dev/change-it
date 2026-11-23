@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   getAllFiles,
   getGroupFiles,
   getStoredFile,
   removeJob,
+  type StoredFile,
 } from '../jobs/jobStore.js';
 import { createZipStream } from '../services/zipService.js';
 import { ApiError } from '../utils/errors.js';
@@ -21,83 +22,90 @@ async function ensureExists(filePath: string): Promise<void> {
   }
 }
 
+async function ensureAllExist(files: StoredFile[]): Promise<void> {
+  await Promise.all(files.map((file) => ensureExists(file.path)));
+}
+
+function sendZip(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  files: StoredFile[],
+  fileName: string,
+  onClose?: () => void,
+): FastifyReply {
+  const archive = createZipStream(files);
+
+  archive.on('error', (error) => {
+    request.log.error({ err: error }, 'ZIP stream failed');
+    reply.raw.destroy(error);
+  });
+
+  reply.header('Content-Type', 'application/zip');
+  reply.header('Content-Disposition', contentDisposition(fileName));
+  reply.header('Cache-Control', 'no-store');
+
+  if (onClose) {
+    reply.raw.on('close', onClose);
+  }
+
+  return reply.send(archive);
+}
+
 export async function downloadRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/download/:jobId/all', async (request, reply) => {
-    const { jobId } = request.params as { jobId: string };
+  app.get<{ Params: { jobId: string } }>('/api/download/:jobId/all', async (request, reply) => {
+    const { jobId } = request.params;
     const files = getAllFiles(jobId);
 
     if (files.length === 0) {
       throw new ApiError(404, 'NOT_FOUND', EXPIRED_MESSAGE);
     }
 
-    for (const file of files) {
-      await ensureExists(file.path);
-    }
+    await ensureAllExist(files);
 
-    const archive = createZipStream(files);
-    archive.on('error', (error) => {
-      request.log.error({ err: error }, 'ZIP stream failed');
-      reply.raw.destroy(error);
-    });
-
-    const fileName = `change-it-${jobId.slice(0, 8)}.zip`;
-    reply.header('Content-Type', 'application/zip');
-    reply.header('Content-Disposition', contentDisposition(fileName));
-    reply.header('Cache-Control', 'no-store');
-
-    reply.raw.on('close', () => {
+    return sendZip(request, reply, files, `change-it-${jobId.slice(0, 8)}.zip`, () => {
       void removeJob(jobId);
     });
-
-    return reply.send(archive);
   });
 
-  app.get('/api/download/:jobId/group/:groupId', async (request, reply) => {
-    const { jobId, groupId } = request.params as { jobId: string; groupId: string };
+  app.get<{
+    Params: { jobId: string; groupId: string };
+    Querystring: { name?: string };
+  }>('/api/download/:jobId/group/:groupId', async (request, reply) => {
+    const { jobId, groupId } = request.params;
     const files = getGroupFiles(jobId, groupId);
 
     if (files.length === 0) {
       throw new ApiError(404, 'NOT_FOUND', EXPIRED_MESSAGE);
     }
 
-    for (const file of files) {
-      await ensureExists(file.path);
-    }
+    await ensureAllExist(files);
 
-    const archive = createZipStream(files);
-    archive.on('error', (error) => {
-      request.log.error({ err: error }, 'ZIP stream failed');
-      reply.raw.destroy(error);
-    });
-
-    const query = request.query as { name?: string };
-    const requested = typeof query.name === 'string' ? sanitizeFilename(query.name) : '';
-    const fileName = requested.toLowerCase().endsWith('.zip')
-      ? requested
+    const requestedName = request.query.name ? sanitizeFilename(request.query.name) : '';
+    const fileName = requestedName.toLowerCase().endsWith('.zip')
+      ? requestedName
       : `change-it-${groupId.slice(0, 8)}.zip`;
 
-    reply.header('Content-Type', 'application/zip');
-    reply.header('Content-Disposition', contentDisposition(fileName));
-    reply.header('Cache-Control', 'no-store');
-
-    return reply.send(archive);
+    return sendZip(request, reply, files, fileName);
   });
 
-  app.get('/api/download/:jobId/file/:fileId', async (request, reply) => {
-    const { jobId, fileId } = request.params as { jobId: string; fileId: string };
-    const file = getStoredFile(jobId, fileId);
+  app.get<{ Params: { jobId: string; fileId: string } }>(
+    '/api/download/:jobId/file/:fileId',
+    async (request, reply) => {
+      const { jobId, fileId } = request.params;
+      const file = getStoredFile(jobId, fileId);
 
-    if (!file) {
-      throw new ApiError(404, 'NOT_FOUND', EXPIRED_MESSAGE);
-    }
+      if (!file) {
+        throw new ApiError(404, 'NOT_FOUND', EXPIRED_MESSAGE);
+      }
 
-    await ensureExists(file.path);
+      await ensureExists(file.path);
 
-    reply.header('Content-Type', file.mime);
-    reply.header('Content-Length', String(file.size));
-    reply.header('Content-Disposition', contentDisposition(file.downloadName));
-    reply.header('Cache-Control', 'no-store');
+      reply.header('Content-Type', file.mime);
+      reply.header('Content-Length', String(file.size));
+      reply.header('Content-Disposition', contentDisposition(file.downloadName));
+      reply.header('Cache-Control', 'no-store');
 
-    return reply.send(fs.createReadStream(file.path));
-  });
+      return reply.send(fs.createReadStream(file.path));
+    },
+  );
 }

@@ -1,27 +1,34 @@
 import cron from 'node-cron';
+import type { FastifyBaseLogger } from 'fastify';
 import { config } from '../config.js';
 import { sweepStaleJobs } from './jobStore.js';
 
 let task: ReturnType<typeof cron.schedule> | null = null;
 
-export function startCleanupCron(): void {
+async function runCleanup(logger: FastifyBaseLogger): Promise<void> {
+  try {
+    const removed = await sweepStaleJobs(config.cleanupMaxAgeMs);
+    if (removed > 0) {
+      logger.info({ removed }, 'cleanup removed expired workspaces');
+    }
+  } catch (error) {
+    logger.error({ err: error }, 'cleanup sweep failed');
+  }
+}
+
+export function startCleanupCron(logger: FastifyBaseLogger): void {
   if (task) return;
+
   task = cron.schedule(config.cleanupCron, () => {
-    void sweepStaleJobs(config.cleanupMaxAgeMs)
-      .then((removed) => {
-        if (removed > 0) {
-          console.log(`[change-it] cleanup removed ${removed} expired workspace(s)`);
-        }
-      })
-      .catch((error: unknown) => {
-        console.error('[change-it] cleanup sweep failed', error);
-      });
+    void runCleanup(logger);
   });
 }
 
-export function stopCleanupCron(): void {
-  if (task) {
-    task.stop();
-    task = null;
+export async function stopCleanupCron(): Promise<void> {
+  const currentTask = task;
+  task = null;
+
+  if (currentTask) {
+    await currentTask.stop();
   }
 }

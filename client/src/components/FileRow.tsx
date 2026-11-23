@@ -1,8 +1,7 @@
 import { FileText, Image as ImageIcon, RotateCcw, X } from 'lucide-react';
 import { COMPRESSION_LEVELS, TARGET_FORMATS } from '../lib/constants';
 import { formatBytes } from '../lib/format';
-import type { QueuedFile } from '../hooks/useFileQueue';
-import type { CompressionLevel, OutputFormat } from '../types';
+import type { CompressionLevel, OutputFormat, QueuedFile } from '../types';
 
 interface FileRowProps {
   item: QueuedFile;

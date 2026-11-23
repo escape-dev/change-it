@@ -2,6 +2,9 @@ import type { CompressionLevel, OutputFormat, PageFit } from '../types';
 
 export const MAX_FILES = 20;
 export const MAX_FILE_SIZE = 50 * 1024 * 1024;
+export const MAX_FILE_SIZE_LABEL = '50 MB';
+export const MIN_RESIZE_DIMENSION = 16;
+export const MAX_RESIZE_DIMENSION = 20_000;
 
 export const ACCEPT_ATTR =
   '.jpg,.jpeg,.png,.webp,.avif,.heic,.heif,.tif,.tiff,.gif,.pdf,image/jpeg,image/png,image/webp,image/avif,image/heic,image/heif,image/tiff,image/gif,application/pdf';

@@ -2,7 +2,7 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, type PDFImage } from 'pdf-lib';
 import {
   createCanvas,
   DOMMatrix as NapiDOMMatrix,
@@ -32,12 +32,77 @@ export interface PdfRenderOptions {
   maxEdge: number;
 }
 
+interface PdfViewport {
+  width: number;
+  height: number;
+}
+
+interface PdfPage {
+  getViewport(params: { scale: number }): PdfViewport;
+  render(params: {
+    canvasContext: unknown;
+    viewport: PdfViewport;
+    canvas: unknown;
+  }): { promise: Promise<void> };
+  cleanup(): Promise<void>;
+}
+
+interface PdfDocumentView {
+  numPages: number;
+  getPage(pageNumber: number): Promise<PdfPage>;
+  destroy(): Promise<void>;
+}
+
+interface PdfJsModule {
+  getDocument(options: Record<string, unknown>): { promise: Promise<PdfDocumentView> };
+}
+
 const PAGE_SIZES: Record<Exclude<PageFit, 'original'>, [number, number]> = {
   a4: [595.28, 841.89],
   letter: [612, 792],
 };
 
-const PDF_MAX_PAGE_POINTS = 14400;
+const PAGE_MARGIN = 24;
+const PDF_MAX_PAGE_POINTS = 14_400;
+const PIXELS_PER_INCH = 96;
+
+function addOriginalSizePage(
+  doc: PDFDocument,
+  image: PdfImageInput,
+  embedded: PDFImage,
+): void {
+  const rawWidth = (image.width * 72) / PIXELS_PER_INCH;
+  const rawHeight = (image.height * 72) / PIXELS_PER_INCH;
+  const scale = Math.min(1, PDF_MAX_PAGE_POINTS / Math.max(rawWidth, rawHeight));
+  const pageWidth = Math.max(1, rawWidth * scale);
+  const pageHeight = Math.max(1, rawHeight * scale);
+
+  const page = doc.addPage([pageWidth, pageHeight]);
+  page.drawImage(embedded, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+}
+
+function addFittedPage(
+  doc: PDFDocument,
+  image: PdfImageInput,
+  embedded: PDFImage,
+  fit: Exclude<PageFit, 'original'>,
+): void {
+  const [pageWidth, pageHeight] = PAGE_SIZES[fit];
+  const scale = Math.min(
+    (pageWidth - PAGE_MARGIN * 2) / image.width,
+    (pageHeight - PAGE_MARGIN * 2) / image.height,
+  );
+  const drawWidth = image.width * scale;
+  const drawHeight = image.height * scale;
+
+  const page = doc.addPage([pageWidth, pageHeight]);
+  page.drawImage(embedded, {
+    x: (pageWidth - drawWidth) / 2,
+    y: (pageHeight - drawHeight) / 2,
+    width: drawWidth,
+    height: drawHeight,
+  });
+}
 
 export async function buildPdfFromImages(images: PdfImageInput[], fit: PageFit): Promise<Buffer> {
   if (images.length === 0) {
@@ -53,69 +118,50 @@ export async function buildPdfFromImages(images: PdfImageInput[], fit: PageFit):
     const embedded = await doc.embedJpg(image.data);
 
     if (fit === 'original') {
-      const rawWidth = (image.width * 72) / 96;
-      const rawHeight = (image.height * 72) / 96;
-      const clamp = Math.min(1, PDF_MAX_PAGE_POINTS / Math.max(rawWidth, rawHeight));
-      const pageWidth = Math.max(1, rawWidth * clamp);
-      const pageHeight = Math.max(1, rawHeight * clamp);
-      const page = doc.addPage([pageWidth, pageHeight]);
-      page.drawImage(embedded, { x: 0, y: 0, width: pageWidth, height: pageHeight });
-      continue;
+      addOriginalSizePage(doc, image, embedded);
+    } else {
+      addFittedPage(doc, image, embedded, fit);
     }
-
-    const [pageWidth, pageHeight] = PAGE_SIZES[fit];
-    const margin = 24;
-    const scale = Math.min(
-      (pageWidth - margin * 2) / image.width,
-      (pageHeight - margin * 2) / image.height,
-    );
-    const drawWidth = image.width * scale;
-    const drawHeight = image.height * scale;
-    const page = doc.addPage([pageWidth, pageHeight]);
-    page.drawImage(embedded, {
-      x: (pageWidth - drawWidth) / 2,
-      y: (pageHeight - drawHeight) / 2,
-      width: drawWidth,
-      height: drawHeight,
-    });
   }
 
-  const bytes = await doc.save();
-  return Buffer.from(bytes);
+  return Buffer.from(await doc.save());
 }
 
-let pdfjsPromise: Promise<any> | null = null;
+let pdfjsPromise: Promise<PdfJsModule> | null = null;
+let fontsResolved = false;
 let standardFontDataUrl: string | undefined;
 
-function resolveStandardFonts(): string | undefined {
-  if (standardFontDataUrl !== undefined) return standardFontDataUrl;
-  try {
-    const req = createRequire(import.meta.url);
-    let packageRoot: string | null = null;
-    try {
-      packageRoot = path.dirname(req.resolve('pdfjs-dist/package.json'));
-    } catch {
-      try {
-        const entry = req.resolve('pdfjs-dist');
-        packageRoot = path.dirname(path.dirname(entry));
-      } catch {
-        packageRoot = null;
-      }
-    }
+function resolvePackageRoot(): string | null {
+  const require = createRequire(import.meta.url);
 
-    if (packageRoot) {
-      const fontsDir = path.join(packageRoot, 'standard_fonts');
-      if (existsSync(fontsDir)) {
-        standardFontDataUrl = pathToFileURL(`${fontsDir}${path.sep}`).href;
-      }
-    }
+  try {
+    return path.dirname(require.resolve('pdfjs-dist/package.json'));
   } catch {
-    standardFontDataUrl = undefined;
+    try {
+      const entry = require.resolve('pdfjs-dist');
+      return path.dirname(path.dirname(entry));
+    } catch {
+      return null;
+    }
   }
+}
+
+function getStandardFontDataUrl(): string | undefined {
+  if (fontsResolved) return standardFontDataUrl;
+  fontsResolved = true;
+
+  const packageRoot = resolvePackageRoot();
+  if (!packageRoot) return undefined;
+
+  const fontsDir = path.join(packageRoot, 'standard_fonts');
+  if (existsSync(fontsDir)) {
+    standardFontDataUrl = pathToFileURL(`${fontsDir}${path.sep}`).href;
+  }
+
   return standardFontDataUrl;
 }
 
-async function loadPdfjs(): Promise<any> {
+async function loadPdfjs(): Promise<PdfJsModule> {
   if (pdfjsPromise) return pdfjsPromise;
 
   pdfjsPromise = (async () => {
@@ -125,24 +171,21 @@ async function loadPdfjs(): Promise<any> {
       Path2D: NapiPath2D,
     });
 
-    const candidates = [
-      'pdfjs-dist/legacy/build/pdf.mjs',
-      'pdfjs-dist/build/pdf.mjs',
-    ];
-
+    const candidates = ['pdfjs-dist/legacy/build/pdf.mjs', 'pdfjs-dist/build/pdf.mjs'];
     let lastError: unknown;
+
     for (const candidate of candidates) {
       try {
-        return await import(candidate);
+        return (await import(candidate)) as PdfJsModule;
       } catch (error) {
         lastError = error;
       }
     }
 
     try {
-      const req = createRequire(import.meta.url);
-      const resolved = req.resolve('pdfjs-dist/legacy/build/pdf.mjs');
-      return await import(pathToFileURL(resolved).href);
+      const require = createRequire(import.meta.url);
+      const resolved = require.resolve('pdfjs-dist/legacy/build/pdf.mjs');
+      return (await import(pathToFileURL(resolved).href)) as PdfJsModule;
     } catch (error) {
       lastError = error;
     }
@@ -158,14 +201,10 @@ async function loadPdfjs(): Promise<any> {
   return pdfjsPromise;
 }
 
-export async function* renderPdfPages(
-  data: Buffer,
-  options: PdfRenderOptions,
-): AsyncGenerator<RenderedPdfPage> {
+async function openPdf(data: Buffer): Promise<PdfDocumentView> {
   const pdfjs = await loadPdfjs();
-  const fonts = resolveStandardFonts();
+  const fonts = getStandardFontDataUrl();
 
-  let doc: any;
   try {
     const loadingTask = pdfjs.getDocument({
       data: new Uint8Array(data),
@@ -174,7 +213,8 @@ export async function* renderPdfPages(
       isEvalSupported: false,
       ...(fonts ? { standardFontDataUrl: fonts } : {}),
     });
-    doc = await loadingTask.promise;
+
+    return await loadingTask.promise;
   } catch (error) {
     throw new ApiError(
       422,
@@ -183,42 +223,56 @@ export async function* renderPdfPages(
       { cause: error },
     );
   }
+}
 
-  const totalPages: number = doc.numPages;
-  const pageLimit = Math.min(totalPages, options.maxPages);
+async function renderPage(
+  page: PdfPage,
+  options: PdfRenderOptions,
+): Promise<{ png: Buffer; width: number; height: number }> {
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(
+    options.dpi / 72,
+    options.maxEdge / Math.max(baseViewport.width, baseViewport.height),
+  );
+  const viewport = page.getViewport({ scale: Math.max(scale, 0.05) });
+  const width = Math.max(1, Math.ceil(viewport.width));
+  const height = Math.max(1, Math.ceil(viewport.height));
+
+  const canvas = createCanvas(width, height);
+  const context = canvas.getContext('2d');
+
+  await page.render({ canvasContext: context, viewport, canvas }).promise;
+
+  return { png: canvas.toBuffer('image/png'), width, height };
+}
+
+async function closePdf(doc: PdfDocumentView): Promise<void> {
+  await doc.destroy().catch(() => undefined);
+}
+
+export async function* renderPdfPages(
+  data: Buffer,
+  options: PdfRenderOptions,
+): AsyncGenerator<RenderedPdfPage> {
+  const doc = await openPdf(data);
+  const pageLimit = Math.min(doc.numPages, options.maxPages);
 
   try {
     for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
       const page = await doc.getPage(pageNumber);
+
       try {
-        const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(
-          options.dpi / 72,
-          options.maxEdge / Math.max(baseViewport.width, baseViewport.height),
-        );
-        const viewport = page.getViewport({ scale: Math.max(scale, 0.05) });
-        const width = Math.max(1, Math.ceil(viewport.width));
-        const height = Math.max(1, Math.ceil(viewport.height));
-        const canvas = createCanvas(width, height);
-        const context = canvas.getContext('2d');
-
-        await page.render({
-          canvasContext: context,
-          viewport,
-          canvas,
-        }).promise;
-
-        const png = canvas.toBuffer('image/png');
-        yield { pageNumber, totalPages, png, width, height };
+        const rendered = await renderPage(page, options);
+        yield {
+          pageNumber,
+          totalPages: doc.numPages,
+          ...rendered,
+        };
       } finally {
         await page.cleanup();
       }
     }
   } finally {
-    try {
-      await doc.destroy();
-    } catch {
-      void 0;
-    }
+    await closePdf(doc);
   }
 }

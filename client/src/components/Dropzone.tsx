@@ -64,6 +64,7 @@ export function Dropzone({ onFiles, disabled = false }: DropzoneProps) {
         multiple
         accept={ACCEPT_ATTR}
         className="hidden"
+        disabled={disabled}
         onChange={(event) => {
           handleSelection(event.target.files);
           event.target.value = '';

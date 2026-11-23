@@ -28,4 +28,5 @@
 - [ ] Verify `JPG`, `PNG`, `WebP`, `AVIF`, `HEIC`, and `PDF` inputs all convert without unhandled rejections.
 - [ ] Verify output pixel dimensions (`width × height`) match input dimensions across `low`, `medium`, and `high` compression when resize is disabled.
 - [ ] Verify temporary files are deleted after request completion and via scheduled cleanup.
-- [ ] Run TypeScript typecheck (`npm run typecheck`) and build (`npm run build`) cleanly.
+- [ ] Run TypeScript typecheck (`npm run typecheck`) and unit tests (`npm test`) cleanly.
+- [ ] Run the production build (`npm run build`) cleanly.

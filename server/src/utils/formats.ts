@@ -54,7 +54,14 @@ export function normalizeOutputFormat(value: unknown): OutputFormat | null {
   return (OUTPUT_FORMATS as readonly string[]).includes(normalized) ? (normalized as OutputFormat) : null;
 }
 
-export function extForFormat(format: OutputFormat): string {
+export function isImageOutputFormat(format: OutputFormat): format is ImageOutputFormat {
+  return format !== 'pdf';
+}
+
+export function requireImageOutputFormat(format: OutputFormat): ImageOutputFormat {
+  if (!isImageOutputFormat(format)) {
+    throw new Error('Image conversion cannot target PDF');
+  }
   return format;
 }
 

@@ -1,5 +1,5 @@
 import { AlertTriangle, Archive, RefreshCw } from 'lucide-react';
-import { formatBytes } from '../lib/format';
+import { formatBytes, formatPercent } from '../lib/format';
 import type { ConversionError, ConversionResult } from '../types';
 import { ResultCard } from './ResultCard';
 
@@ -28,7 +28,7 @@ export function ResultsView({ jobId, results, errors, onReset }: ResultsViewProp
           <p className="hint mt-1">
             {formatBytes(totalOriginal)} → {formatBytes(totalOutput)} ·{' '}
             <span className={saved >= 0 ? 'text-emerald-300' : 'text-amber-300'}>
-              {Math.abs(saved)}% {saved >= 0 ? 'saved' : 'larger'}
+              {formatPercent(saved)} {saved >= 0 ? 'saved' : 'larger'}
             </span>
           </p>
         </div>

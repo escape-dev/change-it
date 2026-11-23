@@ -12,9 +12,10 @@
     "dev:server": "tsx watch server/src/index.ts",
     "dev:client": "vite --config client/vite.config.ts",
     "build": "npm run build:server && npm run build:client",
-    "build:server": "tsc -p server/tsconfig.json",
+    "build:server": "tsc -p server/tsconfig.build.json",
     "build:client": "vite build --config client/vite.config.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
+    "test": "node --import tsx --test",
     "start": "node server/dist/index.js",
     "clean": "node -e \"const fs=require('fs');for(const p of ['server/dist','client/dist'])fs.rmSync(p,{recursive:true,force:true})\""
   },
@@ -51,3 +52,4 @@
     "vite": "^6.0.7"
   }
 }
+

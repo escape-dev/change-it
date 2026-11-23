@@ -11,9 +11,11 @@ function normalizePastedFile(file: File): File {
   });
 }
 
-export function useClipboardPaste(onFiles: (files: File[]) => void): void {
+export function useClipboardPaste(onFiles: (files: File[]) => void, enabled = true): void {
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
+      if (!enabled) return;
+
       const target = event.target as HTMLElement | null;
       if (
         target &&
@@ -52,5 +54,5 @@ export function useClipboardPaste(onFiles: (files: File[]) => void): void {
 
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [onFiles]);
+  }, [onFiles, enabled]);
 }

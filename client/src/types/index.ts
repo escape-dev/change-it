@@ -2,6 +2,20 @@ export type CompressionLevel = 'low' | 'medium' | 'high';
 export type OutputFormat = 'jpg' | 'png' | 'webp' | 'avif' | 'tiff' | 'pdf';
 export type PageFit = 'original' | 'a4' | 'letter';
 
+export interface QueuedFile {
+  id: string;
+  file: File;
+  previewUrl?: string;
+  format: string;
+  size: number;
+  targetFormat: OutputFormat;
+  compression: CompressionLevel;
+  overrides: {
+    targetFormat: boolean;
+    compression: boolean;
+  };
+}
+
 export interface ResizeOptions {
   width?: number;
   height?: number;

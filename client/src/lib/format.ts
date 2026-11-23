@@ -4,7 +4,8 @@ export function formatBytes(bytes: number): string {
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** exponent;
   const decimals = value >= 10 || exponent === 0 ? 0 : 1;
-  return `${value.toFixed(decimals)} ${units[exponent]}`;
+  const formatted = value.toFixed(decimals).replace(/\.0$/, '');
+  return `${formatted} ${units[exponent]}`;
 }
 
 export function formatDuration(ms: number): string {

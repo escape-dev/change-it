@@ -1,26 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { MAX_FILES, MAX_FILE_SIZE, guessFormat, isBrowserPreviewable, isSupportedInput } from '../lib/constants';
-import type { CompressionLevel, OutputFormat } from '../types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MAX_FILES } from '../lib/constants';
+import { prepareQueuedFiles } from '../lib/queue';
+import type { CompressionLevel, OutputFormat, QueuedFile } from '../types';
 
-export interface QueuedFile {
-  id: string;
-  file: File;
-  previewUrl?: string;
-  format: string;
-  size: number;
-  targetFormat: OutputFormat;
-  compression: CompressionLevel;
-  overrides: {
-    targetFormat: boolean;
-    compression: boolean;
-  };
-}
-
-function makeId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+function patchFile(
+  files: QueuedFile[],
+  id: string,
+  update: (file: QueuedFile) => QueuedFile,
+): QueuedFile[] {
+  return files.map((file) => (file.id === id ? update(file) : file));
 }
 
 export function useFileQueue() {
@@ -46,50 +34,22 @@ export function useFileQueue() {
   const addFiles = useCallback(
     (incoming: File[]) => {
       const current = filesRef.current;
+
       if (current.length >= MAX_FILES) {
         setError(`You can add up to ${MAX_FILES} files at once.`);
         return;
       }
 
-      const next = [...current];
-      const problems: string[] = [];
+      const { accepted, problems } = prepareQueuedFiles(incoming, current.length, {
+        targetFormat: globalTarget,
+        compression: globalCompression,
+      });
 
-      for (const file of incoming) {
-        if (next.length >= MAX_FILES) {
-          problems.push(`Only the first ${MAX_FILES} files were added.`);
-          break;
-        }
-        if (file.size === 0) {
-          problems.push(`"${file.name}" is empty and was skipped.`);
-          continue;
-        }
-        if (file.size > MAX_FILE_SIZE) {
-          problems.push(`"${file.name}" is larger than 50 MB and was skipped.`);
-          continue;
-        }
-
-        const format = guessFormat(file);
-        if (!isSupportedInput(format)) {
-          problems.push(`"${file.name}" is not a supported file type.`);
-          continue;
-        }
-
-        const previewUrl = isBrowserPreviewable(format) ? URL.createObjectURL(file) : undefined;
-        if (previewUrl) objectUrls.current.add(previewUrl);
-
-        next.push({
-          id: makeId(),
-          file,
-          ...(previewUrl ? { previewUrl } : {}),
-          format,
-          size: file.size,
-          targetFormat: globalTarget,
-          compression: globalCompression,
-          overrides: { targetFormat: false, compression: false },
-        });
+      for (const item of accepted) {
+        if (item.previewUrl) objectUrls.current.add(item.previewUrl);
       }
 
-      commit(next);
+      commit([...current, ...accepted]);
       setError(problems.length > 0 ? problems.join(' ') : null);
     },
     [commit, globalTarget, globalCompression],
@@ -137,15 +97,11 @@ export function useFileQueue() {
   const setFileTarget = useCallback(
     (id: string, target: OutputFormat) => {
       commit(
-        filesRef.current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                targetFormat: target,
-                overrides: { ...item.overrides, targetFormat: target !== globalTarget },
-              }
-            : item,
-        ),
+        patchFile(filesRef.current, id, (item) => ({
+          ...item,
+          targetFormat: target,
+          overrides: { ...item.overrides, targetFormat: target !== globalTarget },
+        })),
       );
     },
     [commit, globalTarget],
@@ -154,18 +110,11 @@ export function useFileQueue() {
   const setFileCompression = useCallback(
     (id: string, compression: CompressionLevel) => {
       commit(
-        filesRef.current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                compression,
-                overrides: {
-                  ...item.overrides,
-                  compression: compression !== globalCompression,
-                },
-              }
-            : item,
-        ),
+        patchFile(filesRef.current, id, (item) => ({
+          ...item,
+          compression,
+          overrides: { ...item.overrides, compression: compression !== globalCompression },
+        })),
       );
     },
     [commit, globalCompression],
@@ -174,16 +123,12 @@ export function useFileQueue() {
   const syncFile = useCallback(
     (id: string) => {
       commit(
-        filesRef.current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                targetFormat: globalTarget,
-                compression: globalCompression,
-                overrides: { targetFormat: false, compression: false },
-              }
-            : item,
-        ),
+        patchFile(filesRef.current, id, (item) => ({
+          ...item,
+          targetFormat: globalTarget,
+          compression: globalCompression,
+          overrides: { targetFormat: false, compression: false },
+        })),
       );
     },
     [commit, globalTarget, globalCompression],
@@ -191,13 +136,17 @@ export function useFileQueue() {
 
   useEffect(() => {
     const urls = objectUrls.current;
+
     return () => {
       for (const url of urls) URL.revokeObjectURL(url);
       urls.clear();
     };
   }, []);
 
-  const totalSize = files.reduce((sum, item) => sum + item.size, 0);
+  const totalSize = useMemo(
+    () => files.reduce((sum, item) => sum + item.size, 0),
+    [files],
+  );
 
   return {
     files,

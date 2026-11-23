@@ -2,8 +2,12 @@ import sharp, { type Sharp } from 'sharp';
 import { config } from '../config.js';
 import { ApiError } from '../utils/errors.js';
 import { isHeicFormat, type CompressionLevel, type ImageOutputFormat } from '../utils/formats.js';
-import type { ResizeOptions } from './options.js';
 import { decodeHeic } from './heicProcessor.js';
+import type { ResizeOptions } from './options.js';
+
+const PREVIEW_MAX_EDGE = 1200;
+const PREVIEW_QUALITY = 80;
+const WHITE = '#ffffff';
 
 const PRESETS = {
   low: {
@@ -43,6 +47,8 @@ const PRESETS = {
   },
 } as const;
 
+type CompressionPreset = (typeof PRESETS)[CompressionLevel];
+
 export interface ImageSource {
   path?: string;
   buffer?: Buffer;
@@ -62,6 +68,51 @@ function createSharp(source: ImageSource): Sharp {
   const input = source.buffer ?? source.path;
   if (!input) throw new Error('Image source is missing');
   return sharp(input, { failOn: 'none', limitInputPixels: config.maxInputPixels });
+}
+
+function applyResize(pipeline: Sharp, resize: ResizeOptions | null | undefined): Sharp {
+  if (!resize) return pipeline;
+
+  const { width, height } = resize;
+  if (!width && !height) return pipeline;
+
+  return pipeline.resize({
+    ...(width ? { width } : {}),
+    ...(height ? { height } : {}),
+    fit: 'inside',
+    withoutEnlargement: true,
+    position: 'center',
+  });
+}
+
+function applyJpegEncoding(pipeline: Sharp, preset: CompressionPreset, flatten: boolean): Sharp {
+  const prepared = flatten ? pipeline.flatten({ background: WHITE }) : pipeline;
+  return prepared.jpeg({
+    quality: preset.jpeg.quality,
+    chromaSubsampling: preset.jpeg.chromaSubsampling,
+    progressive: true,
+    mozjpeg: true,
+  });
+}
+
+function applyOutputEncoding(
+  pipeline: Sharp,
+  format: ImageOutputFormat,
+  preset: CompressionPreset,
+  hasAlpha: boolean,
+): Sharp {
+  switch (format) {
+    case 'jpg':
+      return applyJpegEncoding(pipeline, preset, hasAlpha);
+    case 'png':
+      return pipeline.png({ ...preset.png });
+    case 'webp':
+      return pipeline.webp({ ...preset.webp });
+    case 'avif':
+      return pipeline.avif({ ...preset.avif });
+    case 'tiff':
+      return pipeline.tiff({ ...preset.tiff });
+  }
 }
 
 export async function prepareImageSource(
@@ -99,6 +150,7 @@ export async function prepareImageSource(
     };
   } catch (error) {
     if (error instanceof ApiError) throw error;
+
     throw new ApiError(
       422,
       'INVALID_IMAGE',
@@ -108,51 +160,18 @@ export async function prepareImageSource(
   }
 }
 
-function applyResize(pipeline: Sharp, resize: ResizeOptions | null | undefined): Sharp {
-  if (!resize) return pipeline;
-  const { width, height } = resize;
-  if (!width && !height) return pipeline;
-  return pipeline.resize({
-    ...(width ? { width } : {}),
-    ...(height ? { height } : {}),
-    fit: 'inside',
-    withoutEnlargement: true,
-    position: 'center',
-  });
-}
-
 export async function encodeImage(
   source: ImageSource,
   format: ImageOutputFormat,
   compression: CompressionLevel,
   resize?: ResizeOptions | null,
 ): Promise<EncodedImage> {
-  const preset = PRESETS[compression];
-  let pipeline = applyResize(createSharp(source), resize);
-
-  switch (format) {
-    case 'jpg':
-      if (source.hasAlpha) pipeline = pipeline.flatten({ background: '#ffffff' });
-      pipeline = pipeline.jpeg({
-        quality: preset.jpeg.quality,
-        chromaSubsampling: preset.jpeg.chromaSubsampling,
-        progressive: true,
-        mozjpeg: true,
-      });
-      break;
-    case 'png':
-      pipeline = pipeline.png({ ...preset.png });
-      break;
-    case 'webp':
-      pipeline = pipeline.webp({ ...preset.webp });
-      break;
-    case 'avif':
-      pipeline = pipeline.avif({ ...preset.avif });
-      break;
-    case 'tiff':
-      pipeline = pipeline.tiff({ ...preset.tiff });
-      break;
-  }
+  const pipeline = applyOutputEncoding(
+    applyResize(createSharp(source), resize),
+    format,
+    PRESETS[compression],
+    source.hasAlpha,
+  );
 
   try {
     const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
@@ -172,44 +191,38 @@ export async function encodeForPdf(
   compression: CompressionLevel,
   resize?: ResizeOptions | null,
 ): Promise<EncodedImage> {
-  const preset = PRESETS[compression];
-  let pipeline = applyResize(createSharp(source), resize);
-  if (source.hasAlpha) pipeline = pipeline.flatten({ background: '#ffffff' });
-  pipeline = pipeline.jpeg({
-    quality: preset.jpeg.quality,
-    chromaSubsampling: preset.jpeg.chromaSubsampling,
-    progressive: true,
-    mozjpeg: true,
-  });
+  const pipeline = applyJpegEncoding(
+    applyResize(createSharp(source), resize),
+    PRESETS[compression],
+    source.hasAlpha,
+  );
 
   const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height };
 }
 
-async function toDataUrl(buffer: Buffer): Promise<string | undefined> {
+async function renderPreview(pipeline: Sharp): Promise<string | undefined> {
   try {
-    const previewBuffer = await sharp(buffer, { failOn: 'none' })
-      .resize({ width: 1200, height: 1200, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 80 })
+    const preview = await pipeline
+      .resize({
+        width: PREVIEW_MAX_EDGE,
+        height: PREVIEW_MAX_EDGE,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({ quality: PREVIEW_QUALITY })
       .toBuffer();
-    return `data:image/webp;base64,${previewBuffer.toString('base64')}`;
+
+    return `data:image/webp;base64,${preview.toString('base64')}`;
   } catch {
     return undefined;
   }
 }
 
-export async function createImagePreview(source: ImageSource): Promise<string | undefined> {
-  try {
-    const previewBuffer = await createSharp(source)
-      .resize({ width: 1200, height: 1200, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 80 })
-      .toBuffer();
-    return `data:image/webp;base64,${previewBuffer.toString('base64')}`;
-  } catch {
-    return undefined;
-  }
+export function createImagePreview(source: ImageSource): Promise<string | undefined> {
+  return renderPreview(createSharp(source));
 }
 
-export async function createBufferPreview(buffer: Buffer): Promise<string | undefined> {
-  return toDataUrl(buffer);
+export function createBufferPreview(buffer: Buffer): Promise<string | undefined> {
+  return renderPreview(sharp(buffer, { failOn: 'none', limitInputPixels: config.maxInputPixels }));
 }
