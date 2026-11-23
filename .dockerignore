@@ -2,6 +2,7 @@ node_modules
 server/dist
 client/dist
 .git
+.github
 .gitignore
 .tmp
 .env

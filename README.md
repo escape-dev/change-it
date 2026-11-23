@@ -60,6 +60,22 @@ docker run --rm -p 3000:3000 change-it
 
 The container runs as the non-root `node` user with `NODE_ENV=production`.
 
+## Continuous Delivery
+
+The workflow at `.github/workflows/release.yml` runs only on pushes to `master`:
+
+1. Installs dependencies, type-checks, runs tests, and builds both server and client.
+2. Builds and pushes the Docker image to `ghcr.io/escape-dev/change-it` with `latest` and `sha-<short>` tags, plus `v<version>` when a new release is created.
+3. Creates the GitHub Release `v<version>` when that release does not already exist.
+
+To publish a new release, bump `version` in `package.json` and push to `master`. Pushing without a version bump refreshes the `latest` and commit-SHA image tags but does not create another release.
+
+```bash
+docker pull ghcr.io/escape-dev/change-it:latest
+```
+
+The workflow uses the repository `GITHUB_TOKEN` with `contents: write` and `packages: write`; no extra secrets are required. If publishing is blocked, ensure repository Actions settings permit read/write workflow token access. GHCR packages are private by default, so adjust package visibility in GitHub if anonymous pulls are desired.
+
 ## Scripts
 
 | Command | Description |
