@@ -1,3 +1,4 @@
+import './env.js';
 import { buildApp, clientBuildExists } from './app.js';
 import { config } from './config.js';
 import { startCleanupCron, stopCleanupCron } from './jobs/cleanup.js';

@@ -32,12 +32,15 @@ HEIC/HEIF **input** is decoded through `heic-convert`. HEIC/HEIF **output** is n
 
 ```bash
 npm install
+cp .env.example .env   # optional, on Windows: copy .env.example .env
 npm run dev
 ```
 
 - Frontend (Vite): `http://localhost:5173`
 - Backend (Fastify): `http://localhost:3000`
 - Vite proxies `/api` to the backend during development.
+
+The server loads `.env` automatically when present. Existing environment variables take precedence over values in the file, so production overrides remain unchanged.
 
 ### Production Build
 
